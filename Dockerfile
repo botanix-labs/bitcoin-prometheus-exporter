@@ -12,7 +12,8 @@ RUN apk --no-cache add \
 RUN pip install --no-cache-dir \
         prometheus_client \
         python-bitcoinlib \
-        riprova
+        riprova \
+        requests
 
 RUN mkdir -p /monitor
 ADD ./bitcoind-monitor.py /monitor

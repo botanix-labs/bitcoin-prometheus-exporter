@@ -33,6 +33,8 @@ from wsgiref.simple_server import make_server
 import riprova
 
 from bitcoin.rpc import JSONRPCError, InWarmupError, Proxy
+import requests
+from urllib.parse import urlunsplit
 from prometheus_client import make_wsgi_app, Gauge, Counter
 
 
@@ -181,13 +183,31 @@ def rpc_client_factory():
         return lambda: Proxy(btc_conf_file=BITCOIN_CONF_PATH, timeout=TIMEOUT)
     else:
         host = BITCOIN_RPC_HOST
-        host = "{}:{}@{}".format(BITCOIN_RPC_USER, BITCOIN_RPC_PASSWORD, host)
-        if BITCOIN_RPC_PORT:
-            host = "{}:{}".format(host, BITCOIN_RPC_PORT)
-        service_url = "{}://{}".format(BITCOIN_RPC_SCHEME, host)
-        logger.info("Using environment configuration")
-        return lambda: Proxy(service_url=service_url, timeout=TIMEOUT)
+        base_netloc = f"{host}:{BITCOIN_RPC_PORT}" if BITCOIN_RPC_PORT else host
+        base_url    = urlunsplit((BITCOIN_RPC_SCHEME, base_netloc, "", "", ""))
+        class _RequestsRPC:
+            def __init__(self, url: str, user: str, pwd: str):
+               self._url   = url
+               self._auth  = (user, pwd)
 
+            def call(self, method: str, *params):
+               payload = {
+                    "jsonrpc": "1.0",
+                    "id":      "bitcoin-exporter",
+                    "method":  method,
+                    "params":  list(params),
+               }
+               r = requests.post(self._url, json=payload,
+                                  auth=self._auth, timeout=TIMEOUT)
+               try:
+                    r.raise_for_status()
+               except requests.exceptions.HTTPError as e:
+                    raise JSONRPCError({"code": r.status_code, "message": str(e)}) from None
+               data = r.json()
+               if data.get("error"):
+                    raise JSONRPCError(data["error"])
+               return data.get("result")
+        return lambda: _RequestsRPC(base_url, BITCOIN_RPC_USER, BITCOIN_RPC_PASSWORD)
 
 def rpc_client():
     return rpc_client_factory()()
